@@ -275,7 +275,8 @@ async def generate_image(req: ImageGenerationRequest):
         "agent_mode": req.agent_mode
     }
 
-    result = await dispatch_to_extension("generate", payload, timeout=120.0)
+    account = req.account
+    result = await dispatch_to_extension("generate", payload, timeout=120.0, account=account)
     
     new_media = result.get("new_media", [])
     data = []

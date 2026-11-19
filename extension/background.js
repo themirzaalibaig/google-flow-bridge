@@ -53,10 +53,17 @@ async function sendCdpCommand(tabId, method, params = {}) {
 // Type text natively via Chrome Debugger Input.insertText
 async function typeTextViaDebugger(tabId, text) {
   const target = { tabId };
+  // Detach any stale debugger session first to ensure clean attach
+  try {
+    await chrome.debugger.detach(target);
+  } catch (e) {}
+  
   try {
     await chrome.debugger.attach(target, '1.3');
   } catch (e) {
-    // Might already be attached
+    // If still failing, retry once
+    await new Promise(r => setTimeout(r, 200));
+    await chrome.debugger.attach(target, '1.3');
   }
 
   // Clear existing prompt text first by sending Backspace after selection
