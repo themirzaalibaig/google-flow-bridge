@@ -455,6 +455,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       } else if (action === 'attach_ingredient') {
         const res = await attachMediaIngredient(request.assetKeyword);
         sendResponse(res);
+      } else if (action === 'download_media') {
+        const url = request.url;
+        if (!url) {
+          sendResponse({ success: false, error: 'Missing url parameter' });
+          return;
+        }
+        const resp = await fetch(url, { credentials: 'include' });
+        if (!resp.ok) {
+          sendResponse({ success: false, error: `HTTP ${resp.status} ${resp.statusText}` });
+          return;
+        }
+        const blob = await resp.blob();
+        const contentType = blob.type || resp.headers.get('content-type') || 'application/octet-stream';
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Failed to read media blob'));
+          reader.readAsDataURL(blob);
+        });
+        const base64 = typeof dataUrl === 'string' && dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+        sendResponse({ success: true, base64, contentType, size: blob.size });
       } else if (action === 'start_generation') {
         const started = await triggerStartGeneration();
         sendResponse({ success: started, state: getUIState() });

@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8769/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8770/ws';
 let ws = null;
 let reconnectTimer = null;
 
@@ -198,7 +198,7 @@ function connectWebSocket() {
               try { await chrome.debugger.detach(target); } catch (e) {}
             }
           }
-        } else if (['get_balance', 'list_projects', 'create_project', 'select_project', 'attach_ingredient', 'inspect_dom', 'click_ref', 'type_ref'].includes(action)) {
+        } else if (['get_balance', 'list_projects', 'create_project', 'select_project', 'attach_ingredient', 'download_media', 'inspect_dom', 'click_ref', 'type_ref'].includes(action)) {
           const tab = await getFlowTab();
           if (!tab) {
             ws.send(JSON.stringify({ id, success: false, error: 'No Flow tab found' }));

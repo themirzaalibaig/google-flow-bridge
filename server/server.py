@@ -22,13 +22,16 @@ import sys
 import json
 import time
 import uuid
+import base64
 import asyncio
 import logging
+import mimetypes
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Depends, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -132,6 +135,32 @@ class VideoGenerationRequest(BaseModel):
     aspect_ratio: Optional[str] = "16:9"
     n: Optional[int] = 1
 
+class MediaDownloadRequest(BaseModel):
+    url: str
+    output_path: Optional[str] = None
+
+async def _download_media_bytes(url: str) -> tuple[bytes, str]:
+    if not url:
+        raise HTTPException(status_code=400, detail="Missing media url")
+    res = await dispatch_to_extension("download_media", {"url": url}, timeout=60.0)
+    b64 = res.get("base64")
+    if not b64:
+        raise HTTPException(status_code=502, detail="Extension returned empty media payload")
+    content_type = res.get("contentType") or "application/octet-stream"
+    return base64.b64decode(b64), content_type
+
+def _save_media_bytes(raw_bytes: bytes, content_type: str, output_path: Optional[str] = None) -> Path:
+    if output_path:
+        dest = Path(output_path).expanduser()
+    else:
+        ext = mimetypes.guess_extension(content_type.split(";")[0].strip()) or ".bin"
+        if ext == ".jpe":
+            ext = ".jpg"
+        dest = Path("/tmp") / f"flow_media_{int(time.time() * 1000)}{ext}"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(raw_bytes)
+    return dest
+
 def map_size_to_aspect_ratio(size: Optional[str]) -> str:
     if not size:
         return "1:1"
@@ -218,6 +247,25 @@ async def generate_video(req: VideoGenerationRequest):
         "created": int(time.time()),
         "data": [{"url": item} for item in result.get("new_media", [])]
     }
+
+@app.get("/v1/media/download")
+async def download_media_get(url: str):
+    raw_bytes, content_type = await _download_media_bytes(url)
+    return Response(content=raw_bytes, media_type=content_type)
+
+@app.post("/v1/media/download")
+async def download_media_post(req: MediaDownloadRequest):
+    raw_bytes, content_type = await _download_media_bytes(req.url)
+    if req.output_path:
+        dest = _save_media_bytes(raw_bytes, content_type, req.output_path)
+        return {
+            "success": True,
+            "url": req.url,
+            "output_path": str(dest),
+            "content_type": content_type,
+            "size": len(raw_bytes)
+        }
+    return Response(content=raw_bytes, media_type=content_type)
 
 # ---------------------------------------------------------------------------
 # MCP (Model Context Protocol) Implementation
@@ -355,6 +403,18 @@ MCP_TOOLS = [
             "properties": {
                 "asset_keyword": {"type": "string", "description": "Search keyword for the asset title or name."}
             }
+        }
+    },
+    {
+        "name": "flow_download_media",
+        "description": "Download an authenticated Google Flow image or video URL through the Chrome extension session and save it to disk.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "The Flow media URL (e.g. https://flow.google.com/asb/...)."},
+                "output_path": {"type": "string", "description": "Optional local file path to save the media. Defaults to /tmp/flow_media_<ts>.<ext>."}
+            },
+            "required": ["url"]
         }
     }
 ]
@@ -502,6 +562,25 @@ async def mcp_rpc(request: Request):
                     "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
                 }
             })
+
+        elif tool_name == "flow_download_media":
+            url = args.get("url")
+            raw_bytes, content_type = await _download_media_bytes(url)
+            dest = _save_media_bytes(raw_bytes, content_type, args.get("output_path"))
+            res = {
+                "success": True,
+                "url": url,
+                "output_path": str(dest),
+                "content_type": content_type,
+                "size": len(raw_bytes)
+            }
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
         else:
             return JSONResponse({
                 "jsonrpc": "2.0",
@@ -550,9 +629,15 @@ def run_cli():
     # Status CLI
     subparsers.add_parser("status", help="Check Bridge Server and extension connection")
 
+    # Download CLI
+    dl_parser = subparsers.add_parser("download", help="Download a Flow media URL via the authenticated extension")
+    dl_parser.add_argument("--url", required=True, help="Flow media URL to download")
+    dl_parser.add_argument("--output", required=True, help="Local output file path")
+
     args = parser.parse_args(sys.argv[2:])
 
-    base_url = "http://127.0.0.1:8769"
+    port = int(os.environ.get("PORT", 8770))
+    base_url = f"http://127.0.0.1:{port}"
 
     if args.command == "status":
         req = urllib.request.Request(f"{base_url}/health")
@@ -597,6 +682,22 @@ def run_cli():
                 print(resp.read().decode())
         except Exception as e:
             print(f"Video generation error: {e}")
+
+    elif args.command == "download":
+        payload = json.dumps({
+            "url": args.url,
+            "output_path": args.output
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/v1/media/download",
+            data=payload,
+            headers={"Content-Type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                print(resp.read().decode())
+        except Exception as e:
+            print(f"Download error: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "cli":
