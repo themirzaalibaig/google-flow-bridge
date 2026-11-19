@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8770/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8774/ws';
 let ws = null;
 let reconnectTimer = null;
 
@@ -143,12 +143,32 @@ function connectWebSocket() {
   try {
     ws = new WebSocket(LOCAL_SERVER_WS);
 
-    ws.onopen = () => {
+    ws.onopen = async () => {
       console.log('[Google Flow Bridge] Connected to local Python server');
       if (reconnectTimer) {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
       }
+
+      // Query active account identity and register with server
+      try {
+        const tab = await getFlowTab();
+        let email = null;
+        let url = null;
+        if (tab) {
+          url = tab.url;
+          const stateRes = await chrome.tabs.sendMessage(tab.id, { action: 'get_state' }).catch(() => null);
+          email = stateRes?.state?.email || null;
+        }
+        ws.send(JSON.stringify({
+          action: 'register',
+          payload: {
+            email: email,
+            url: url,
+            extensionVersion: chrome.runtime.getManifest().version
+          }
+        }));
+      } catch (e) {}
     };
 
     ws.onmessage = async (event) => {

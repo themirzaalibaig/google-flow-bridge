@@ -41,6 +41,10 @@ logger = logging.getLogger("flow_bridge")
 
 # Connected Chrome extension WebSocket clients
 active_websockets: List[WebSocket] = []
+# Map WebSocket client to its metadata { "email": str, "url": str, "connected_at": float, "client_id": str }
+client_metadata: Dict[WebSocket, Dict[str, Any]] = {}
+# Round-robin index for parallel multi-account generation
+_round_robin_idx = 0
 # Pending request futures indexed by request id
 pending_requests: Dict[str, asyncio.Future] = {}
 
@@ -73,11 +77,25 @@ app.add_middleware(
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     active_websockets.append(websocket)
+    client_metadata[websocket] = {
+        "email": None,
+        "url": None,
+        "connected_at": time.time(),
+        "client_id": str(uuid.uuid4())[:8]
+    }
     logger.info(f"Chrome extension connected. Total active clients: {len(active_websockets)}")
     try:
         while True:
             raw_data = await websocket.receive_text()
             data = json.loads(raw_data)
+            action = data.get("action")
+            if action == "register":
+                payload = data.get("payload", {})
+                client_metadata[websocket]["email"] = payload.get("email")
+                client_metadata[websocket]["url"] = payload.get("url")
+                logger.info(f"Registered client {client_metadata[websocket]['client_id']} -> Account: {payload.get('email')}")
+                continue
+
             req_id = data.get("id")
             if req_id and req_id in pending_requests:
                 future = pending_requests.pop(req_id)
@@ -87,28 +105,59 @@ async def websocket_endpoint(websocket: WebSocket):
                     else:
                         future.set_exception(Exception(data.get("error", "Unknown extension error")))
     except WebSocketDisconnect:
-        active_websockets.remove(websocket)
+        if websocket in active_websockets:
+            active_websockets.remove(websocket)
+        client_metadata.pop(websocket, None)
         logger.info(f"Chrome extension disconnected. Remaining: {len(active_websockets)}")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         if websocket in active_websockets:
             active_websockets.remove(websocket)
+        client_metadata.pop(websocket, None)
 
-async def dispatch_to_extension(action: str, payload: Dict[str, Any], timeout: float = 120.0) -> Dict[str, Any]:
+async def dispatch_to_extension(
+    action: str,
+    payload: Dict[str, Any],
+    timeout: float = 120.0,
+    account: Optional[str] = None
+) -> Dict[str, Any]:
+    global _round_robin_idx
     if not active_websockets:
         raise HTTPException(
             status_code=503,
             detail="No Chrome Extension connected. Please open flow.google.com and ensure Google Flow Bridge extension is enabled."
         )
-    
-    ws = active_websockets[-1] # use latest connected extension instance
+
+    # 1. Target specific account if requested
+    target_ws: Optional[WebSocket] = None
+    if account:
+        for ws, meta in client_metadata.items():
+            email = (meta.get("email") or "").lower()
+            if account.lower() in email or account.lower() == meta.get("client_id", "").lower():
+                target_ws = ws
+                break
+        if not target_ws:
+            available = [meta.get("email") or meta.get("client_id") for meta in client_metadata.values()]
+            raise HTTPException(
+                status_code=404,
+                detail=f"Requested account '{account}' not found among connected clients: {available}"
+            )
+
+    # 2. If no specific account requested, use round-robin load balancing across all connected accounts
+    if not target_ws:
+        valid_ws_list = [ws for ws in active_websockets if ws in client_metadata]
+        if not valid_ws_list:
+            valid_ws_list = active_websockets
+        target_ws = valid_ws_list[_round_robin_idx % len(valid_ws_list)]
+        _round_robin_idx += 1
+
     req_id = str(uuid.uuid4())
     loop = asyncio.get_running_loop()
     future = loop.create_future()
     pending_requests[req_id] = future
 
     message = json.dumps({"id": req_id, "action": action, "payload": payload})
-    await ws.send_text(message)
+    await target_ws.send_text(message)
 
     try:
         return await asyncio.wait_for(future, timeout=timeout)
@@ -184,10 +233,20 @@ def map_size_to_aspect_ratio(size: Optional[str]) -> str:
 
 @app.get("/health")
 async def health_check():
+    connected_accounts = [
+        {
+            "client_id": meta.get("client_id"),
+            "email": meta.get("email"),
+            "url": meta.get("url"),
+            "connected_at": meta.get("connected_at")
+        }
+        for ws, meta in client_metadata.items()
+    ]
     return {
         "status": "healthy",
         "extension_connected": len(active_websockets) > 0,
         "active_clients": len(active_websockets),
+        "accounts": connected_accounts,
         "timestamp": time.time()
     }
 
@@ -272,6 +331,14 @@ async def download_media_post(req: MediaDownloadRequest):
 # ---------------------------------------------------------------------------
 
 MCP_TOOLS = [
+    {
+        "name": "flow_list_accounts",
+        "description": "List all connected Google Flow browser profiles/accounts, their client IDs, and active tab URLs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
     {
         "name": "flow_generate_image",
         "description": "Generate high quality images using Google Flow (Nano Banana models) with custom aspect ratio, count, and agent mode.",
@@ -432,8 +499,27 @@ async def mcp_rpc(request: Request):
         params = body.get("params", {})
         tool_name = params.get("name")
         args = params.get("arguments", {})
+        account = args.get("account")
 
-        if tool_name == "flow_generate_image":
+        if tool_name == "flow_list_accounts":
+            connected_accounts = [
+                {
+                    "client_id": meta.get("client_id"),
+                    "email": meta.get("email"),
+                    "url": meta.get("url"),
+                    "connected_at": meta.get("connected_at")
+                }
+                for ws, meta in client_metadata.items()
+            ]
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"accounts": connected_accounts, "count": len(connected_accounts)}, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_generate_image":
             payload = {
                 "mode": "image",
                 "prompt": args.get("prompt"),
@@ -442,7 +528,7 @@ async def mcp_rpc(request: Request):
                 "model": args.get("model", "2.1"),
                 "agent_mode": args.get("agent_mode", False)
             }
-            res = await dispatch_to_extension("generate", payload, timeout=120.0)
+            res = await dispatch_to_extension("generate", payload, timeout=120.0, account=account)
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": msg_id,

@@ -369,6 +369,18 @@ async function attachMediaIngredient(assetKeyword) {
   }
   return { success: false, error: 'Failed to attach ingredient' };
 }
+function getAuthenticatedEmail() {
+  const el = Array.from(document.querySelectorAll('*')).find((el) => {
+    const aria = el.getAttribute('aria-label') || '';
+    return aria.includes('@') && (aria.includes('Google Account') || aria.includes('gmail.com'));
+  });
+  if (el) {
+    const match = (el.getAttribute('aria-label') || '').match(/[\w.-]+@[\w.-]+\.\w+/);
+    if (match) return match[0];
+  }
+  return null;
+}
+
 function getUIState() {
   const trigger = document.querySelector('button[aria-label="Settings trigger"]');
   const agentBtn = Array.from(document.querySelectorAll('button')).find(
@@ -379,6 +391,7 @@ function getUIState() {
 
   return {
     url: window.location.href,
+    email: getAuthenticatedEmail(),
     triggerText: trigger ? trigger.innerText.replace(/\n+/g, ' ') : null,
     agentMode: agentBtn ? agentBtn.getAttribute('aria-pressed') === 'true' : false,
     promptText: promptInput ? promptInput.innerText.trim() : '',
