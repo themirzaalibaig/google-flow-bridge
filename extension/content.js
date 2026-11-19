@@ -135,7 +135,100 @@ async function triggerStartGeneration() {
   return false;
 }
 
-// Get current state of all controls
+// Get user account balance and subscription info
+async function getAccountBalance() {
+  const accountBtn = document.querySelector('button[aria-label*="Google Account"], [aria-label*="Account details"]');
+  if (accountBtn) {
+    accountBtn.click();
+    await sleep(400);
+    const dialogOrMenu = document.querySelector('[role="menu"], [role="dialog"], flow-user-menu, .mat-mdc-menu-panel');
+    const text = dialogOrMenu ? dialogOrMenu.innerText : '';
+    
+    // Extract credits (e.g. "1,020 Google Flow credits")
+    const match = text.match(/([\d,]+)\s*(?:Google\s*Flow\s*)?credits/i);
+    const resetMatch = text.match(/Resets\s+([^\n]+)/i);
+
+    // Close menu
+    document.body.click();
+
+    return {
+      credits: match ? parseInt(match[1].replace(/,/g, ''), 10) : null,
+      creditsRaw: match ? match[0] : null,
+      resets: resetMatch ? resetMatch[1].trim() : null,
+      email: text.match(/[\w.-]+@[\w.-]+\.\w+/)?.[0] || null
+    };
+  }
+  return { credits: null, error: 'Account button not found' };
+}
+
+// List user projects from home page
+async function listProjects() {
+  // If not on home page, we can inspect current project or navigate
+  if (!window.location.pathname.startsWith('/project/')) {
+    const cards = Array.from(document.querySelectorAll('a[href*="/project/"]')).map(a => ({
+      url: a.href,
+      id: a.href.split('/project/')[1]?.split('/')[0] || '',
+      title: a.innerText.trim() || a.getAttribute('aria-label') || 'Untitled'
+    }));
+    return cards.filter(c => c.id);
+  }
+  return [{
+    url: window.location.href,
+    id: window.location.pathname.split('/project/')[1]?.split('/')[0] || '',
+    title: document.querySelector('input[aria-label="Editable text"]')?.value || document.title,
+    current: true
+  }];
+}
+
+// Create new project
+async function createNewProject() {
+  if (window.location.pathname !== '/') {
+    window.location.href = 'https://flow.google.com/';
+    await sleep(2500);
+  }
+  const btn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('New project'));
+  if (btn) {
+    btn.click();
+    await sleep(2500);
+    return { success: true, url: window.location.href };
+  }
+  return { success: false, error: 'New project button not found' };
+}
+
+// Select/Switch to project by ID
+async function selectProject(projectId) {
+  const targetUrl = `https://flow.google.com/project/${projectId}`;
+  window.location.href = targetUrl;
+  await sleep(2000);
+  return { success: true, url: window.location.href };
+}
+
+// Attach media as ingredient to the prompt
+async function attachMediaIngredient(assetKeyword) {
+  const ingredientsBtn = document.querySelector('button[aria-label="Add ingredients to the prompt box"]');
+  if (ingredientsBtn) {
+    ingredientsBtn.click();
+    await sleep(800);
+
+    const assetOptions = Array.from(document.querySelectorAll('[role="option"], flow-asset-item, .asset-card'));
+    const target = assetOptions.find(opt => 
+      !assetKeyword || (opt.innerText && opt.innerText.toLowerCase().includes(assetKeyword.toLowerCase()))
+    );
+
+    if (target) {
+      target.click();
+      await sleep(400);
+
+      const addBtn = Array.from(document.querySelectorAll('button')).find(b => b.innerText.includes('Add to prompt'));
+      if (addBtn) {
+        addBtn.click();
+        await sleep(500);
+        return { success: true, attached: target.innerText.replace(/\n+/g, ' ').trim() };
+      }
+    }
+  }
+  return { success: false, error: 'Failed to attach ingredient' };
+}
 function getUIState() {
   const trigger = document.querySelector('button[aria-label="Settings trigger"]');
   const agentBtn = Array.from(document.querySelectorAll('button')).find(
@@ -195,6 +288,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (typeof agentMode === 'boolean') await setAgentMode(agentMode);
         await closeSettings();
         sendResponse({ success: true, state: getUIState() });
+      } else if (action === 'get_balance') {
+        const balance = await getAccountBalance();
+        sendResponse({ success: true, balance });
+      } else if (action === 'list_projects') {
+        const projects = await listProjects();
+        sendResponse({ success: true, projects });
+      } else if (action === 'create_project') {
+        const res = await createNewProject();
+        sendResponse(res);
+      } else if (action === 'select_project') {
+        const res = await selectProject(request.projectId);
+        sendResponse(res);
+      } else if (action === 'attach_ingredient') {
+        const res = await attachMediaIngredient(request.assetKeyword);
+        sendResponse(res);
       } else if (action === 'start_generation') {
         const started = await triggerStartGeneration();
         sendResponse({ success: started, state: getUIState() });

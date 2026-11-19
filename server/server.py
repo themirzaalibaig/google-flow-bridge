@@ -277,6 +277,51 @@ MCP_TOOLS = [
             "type": "object",
             "properties": {}
         }
+    },
+    {
+        "name": "flow_get_balance",
+        "description": "Get user account credits and reset date from Google Flow.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "flow_list_projects",
+        "description": "List existing Flow projects or view the active project.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "flow_create_project",
+        "description": "Create a new project on Google Flow.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "flow_select_project",
+        "description": "Switch to a specific project by project ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "The target project ID (UUID format)."}
+            },
+            "required": ["project_id"]
+        }
+    },
+    {
+        "name": "flow_attach_media",
+        "description": "Attach a project asset or ingredient image to the prompt box.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "asset_keyword": {"type": "string", "description": "Search keyword for the asset title or name."}
+            }
+        }
     }
 ]
 
@@ -336,6 +381,56 @@ async def mcp_rpc(request: Request):
 
         elif tool_name == "flow_get_status":
             res = await dispatch_to_extension("get_state", {})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_get_balance":
+            res = await dispatch_to_extension("get_balance", {})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_list_projects":
+            res = await dispatch_to_extension("list_projects", {})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_create_project":
+            res = await dispatch_to_extension("create_project", {})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_select_project":
+            res = await dispatch_to_extension("select_project", {"projectId": args.get("project_id")})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_attach_media":
+            res = await dispatch_to_extension("attach_ingredient", {"assetKeyword": args.get("asset_keyword")})
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": msg_id,

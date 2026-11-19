@@ -172,6 +172,14 @@ function connectWebSocket() {
           }
           const stateRes = await chrome.tabs.sendMessage(tab.id, { action: 'get_state' });
           ws.send(JSON.stringify({ id, success: true, result: stateRes }));
+        } else if (['get_balance', 'list_projects', 'create_project', 'select_project', 'attach_ingredient'].includes(action)) {
+          const tab = await getFlowTab();
+          if (!tab) {
+            ws.send(JSON.stringify({ id, success: false, error: 'No Flow tab found' }));
+            return;
+          }
+          const forwardRes = await chrome.tabs.sendMessage(tab.id, { action, ...payload });
+          ws.send(JSON.stringify({ id, success: true, result: forwardRes }));
         } else {
           ws.send(JSON.stringify({ id, success: false, error: 'Unsupported action' }));
         }
