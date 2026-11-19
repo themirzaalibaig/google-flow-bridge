@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8767/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8769/ws';
 let ws = null;
 let reconnectTimer = null;
 
@@ -172,7 +172,33 @@ function connectWebSocket() {
           }
           const stateRes = await chrome.tabs.sendMessage(tab.id, { action: 'get_state' });
           ws.send(JSON.stringify({ id, success: true, result: stateRes }));
-        } else if (['get_balance', 'list_projects', 'create_project', 'select_project', 'attach_ingredient'].includes(action)) {
+        } else if (action === 'evaluate') {
+          const tab = await getFlowTab();
+          if (!tab) {
+            ws.send(JSON.stringify({ id, success: false, error: 'No Flow tab found' }));
+            return;
+          }
+          const target = { tabId: tab.id };
+          let attached = false;
+          try {
+            await chrome.debugger.attach(target, '1.3');
+            attached = true;
+          } catch (e) {}
+          try {
+            const evalRes = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+              expression: payload.script,
+              returnByValue: true,
+              awaitPromise: true
+            });
+            ws.send(JSON.stringify({ id, success: true, result: evalRes.result?.value || evalRes.result }));
+          } catch (err) {
+            ws.send(JSON.stringify({ id, success: false, error: err.message || err.toString() }));
+          } finally {
+            if (attached) {
+              try { await chrome.debugger.detach(target); } catch (e) {}
+            }
+          }
+        } else if (['get_balance', 'list_projects', 'create_project', 'select_project', 'attach_ingredient', 'inspect_dom', 'click_ref', 'type_ref'].includes(action)) {
           const tab = await getFlowTab();
           if (!tab) {
             ws.send(JSON.stringify({ id, success: false, error: 'No Flow tab found' }));

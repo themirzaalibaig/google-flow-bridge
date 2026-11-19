@@ -271,11 +271,45 @@ MCP_TOOLS = [
         }
     },
     {
-        "name": "flow_get_status",
-        "description": "Get current connection status and active UI settings from Google Flow.",
+        "name": "flow_inspect_dom",
+        "description": "Inspect live accessible DOM snapshot of Google Flow or running Community Tools, returning elements with assigned ref IDs (e.g. e1, e2) and active dialogs.",
         "inputSchema": {
             "type": "object",
             "properties": {}
+        }
+    },
+    {
+        "name": "flow_click_ref",
+        "description": "Click any interactive element in Google Flow, dialog, or community tool by its assigned ref ID (e.g. e5).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The target ref ID returned by flow_inspect_dom."}
+            },
+            "required": ["ref"]
+        }
+    },
+    {
+        "name": "flow_type_ref",
+        "description": "Type text into an input, textbox, or rich editor by its assigned ref ID.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "ref": {"type": "string", "description": "The target ref ID."},
+                "text": {"type": "string", "description": "The text to type."}
+            },
+            "required": ["ref", "text"]
+        }
+    },
+    {
+        "name": "flow_evaluate",
+        "description": "Execute arbitrary JavaScript expression directly in the Google Flow page context (and its iframes) and return the evaluation result.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "script": {"type": "string", "description": "JavaScript code to execute in the page context."}
+            },
+            "required": ["script"]
         }
     },
     {
@@ -379,8 +413,38 @@ async def mcp_rpc(request: Request):
                 }
             })
 
-        elif tool_name == "flow_get_status":
-            res = await dispatch_to_extension("get_state", {})
+        elif tool_name == "flow_inspect_dom":
+            res = await dispatch_to_extension("inspect_dom", {})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_click_ref":
+            res = await dispatch_to_extension("click_ref", {"ref": args.get("ref")})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_type_ref":
+            res = await dispatch_to_extension("type_ref", {"ref": args.get("ref"), "text": args.get("text")})
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps(res, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_evaluate":
+            res = await dispatch_to_extension("evaluate", {"script": args.get("script")})
             return JSONResponse({
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -488,7 +552,7 @@ def run_cli():
 
     args = parser.parse_args(sys.argv[2:])
 
-    base_url = "http://127.0.0.1:8767"
+    base_url = "http://127.0.0.1:8769"
 
     if args.command == "status":
         req = urllib.request.Request(f"{base_url}/health")
@@ -539,5 +603,5 @@ if __name__ == "__main__":
         run_cli()
     else:
         import uvicorn
-        port = int(os.environ.get("PORT", 8767))
+        port = int(os.environ.get("PORT", 8769))
         uvicorn.run(app, host="127.0.0.1", port=port, reload=False)

@@ -106,6 +106,146 @@ async function setAgentMode(enabled) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Dynamic Runtime Inspection & Agent Control Functions
+// ---------------------------------------------------------------------------
+
+// Build an accessible snapshot of interactive elements on the page (including dialogs, modals, and iframes)
+function inspectDOMSnapshot() {
+  const interactiveSelector = 'button, a, input, textarea, select, [contenteditable="true"], [role="button"], [role="radio"], [role="menuitem"], [role="tab"], [role="dialog"], [role="alertdialog"], [role="option"]';
+  
+  function getTree(root = document, prefix = '') {
+    const elements = Array.from(root.querySelectorAll(interactiveSelector));
+    const items = [];
+
+    elements.forEach((el, index) => {
+      const rect = el.getBoundingClientRect();
+      const style = window.getComputedStyle(el);
+      const isVisible = rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      if (!isVisible) return;
+
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role') || '';
+      const ariaLabel = el.getAttribute('aria-label') || '';
+      const text = (el.innerText || el.value || '').trim().replace(/\s+/g, ' ').substring(0, 100);
+      const disabled = el.disabled || el.getAttribute('aria-disabled') === 'true';
+      const ref = `${prefix}e${index + 1}`;
+
+      el.setAttribute('data-flow-ref', ref);
+
+      items.push({
+        ref,
+        tag,
+        role,
+        ariaLabel,
+        text,
+        disabled,
+        rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) }
+      });
+    });
+
+    const iframes = Array.from(root.querySelectorAll('iframe'));
+    iframes.forEach((iframe, iIdx) => {
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (doc) {
+          const childItems = getTree(doc, `f${iIdx + 1}_`);
+          items.push(...childItems);
+        }
+      } catch (e) {}
+    });
+
+    return items;
+  }
+
+  // Check for any active modals, announcement popups, or dialogs
+  const activeDialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="alertdialog"], mat-dialog-container, flow-dialog, [popover]'))
+    .filter(d => window.getComputedStyle(d).display !== 'none')
+    .map(d => ({
+      title: d.querySelector('h1, h2, h3, [role="heading"]')?.innerText?.trim() || 'Dialog',
+      text: d.innerText?.replace(/\s+/g, ' ').substring(0, 300)
+    }));
+
+  return {
+    url: window.location.href,
+    title: document.title,
+    dialogs: activeDialogs,
+    interactiveElements: getTree()
+  };
+}
+
+// Click element by its assigned ref ID
+function clickElementByRef(ref) {
+  let target = document.querySelector(`[data-flow-ref="${ref}"]`);
+  if (!target) {
+    const iframes = Array.from(document.querySelectorAll('iframe'));
+    for (const iframe of iframes) {
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (doc) {
+          target = doc.querySelector(`[data-flow-ref="${ref}"]`);
+          if (target) break;
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (target) {
+    target.scrollIntoView({ behavior: 'instant', block: 'center' });
+    target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    target.click();
+    return { success: true, text: target.innerText?.trim() };
+  }
+  return { success: false, error: `Element with ref "${ref}" not found` };
+}
+
+// Type text into an element by ref
+function typeElementByRef(ref, text) {
+  let target = document.querySelector(`[data-flow-ref="${ref}"]`);
+  if (!target) {
+    const iframes = Array.from(document.querySelectorAll('iframe'));
+    for (const iframe of iframes) {
+      try {
+        const doc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (doc) {
+          target = doc.querySelector(`[data-flow-ref="${ref}"]`);
+          if (target) break;
+        }
+      } catch (e) {}
+    }
+  }
+
+  if (target) {
+    target.focus();
+    if (target.isContentEditable) {
+      const sel = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(target);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      document.execCommand('insertText', false, text);
+    } else {
+      target.value = text;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    return { success: true };
+  }
+  return { success: false, error: `Element with ref "${ref}" not found` };
+}
+
+// Evaluate arbitrary JavaScript expression in the Flow page context
+function evaluateScript(script) {
+  try {
+    const fn = new Function(script);
+    const result = fn();
+    return { success: true, result };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
 // Focus Prompt Input Box
 function focusAndClearPromptBox() {
   const promptInput = document.querySelector('[aria-label="What do you want to create?"]');
@@ -288,6 +428,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (typeof agentMode === 'boolean') await setAgentMode(agentMode);
         await closeSettings();
         sendResponse({ success: true, state: getUIState() });
+      } else if (action === 'inspect_dom') {
+        const snapshot = inspectDOMSnapshot();
+        sendResponse({ success: true, snapshot });
+      } else if (action === 'click_ref') {
+        const res = clickElementByRef(request.ref);
+        sendResponse(res);
+      } else if (action === 'type_ref') {
+        const res = typeElementByRef(request.ref, request.text);
+        sendResponse(res);
+      } else if (action === 'evaluate') {
+        const res = evaluateScript(request.script);
+        sendResponse(res);
       } else if (action === 'get_balance') {
         const balance = await getAccountBalance();
         sendResponse({ success: true, balance });
