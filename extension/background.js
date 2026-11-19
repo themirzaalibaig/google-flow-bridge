@@ -8,13 +8,34 @@ const LOCAL_SERVER_WS = 'ws://127.0.0.1:8774/ws';
 let ws = null;
 let reconnectTimer = null;
 
-// Find active or open Google Flow tab
+// Find active or open Google Flow tab; if none exists, open one automatically and wait for it
 async function getFlowTab() {
   const tabs = await chrome.tabs.query({ url: ['https://flow.google.com/*', 'https://labs.google/fx/tools/flow/*'] });
   if (tabs.length > 0) {
     return tabs[0];
   }
-  return null;
+
+  // Auto-open Google Flow tab if not open
+  console.log('[Google Flow Bridge] No Flow tab found. Opening https://flow.google.com/ automatically...');
+  const newTab = await chrome.tabs.create({ url: 'https://flow.google.com/', active: true });
+  
+  // Wait for tab to load and content script to initialize
+  await new Promise((resolve) => {
+    const listener = (tabId, changeInfo) => {
+      if (tabId === newTab.id && changeInfo.status === 'complete') {
+        chrome.tabs.onUpdated.removeListener(listener);
+        setTimeout(resolve, 2500); // Allow content script to attach
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+    // Fallback timeout after 15s
+    setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      resolve();
+    }, 15000);
+  });
+
+  return newTab;
 }
 
 // Send CDP command with automatic attach/detach
