@@ -488,7 +488,7 @@ def run_cli():
 
     args = parser.parse_args(sys.argv[2:])
 
-    base_url = "http://127.0.0.1:8766"
+    base_url = "http://127.0.0.1:8767"
 
     if args.command == "status":
         req = urllib.request.Request(f"{base_url}/health")
@@ -539,5 +539,5 @@ if __name__ == "__main__":
         run_cli()
     else:
         import uvicorn
-        port = int(os.environ.get("PORT", 8766))
+        port = int(os.environ.get("PORT", 8767))
         uvicorn.run(app, host="127.0.0.1", port=port, reload=False)

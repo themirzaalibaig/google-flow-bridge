@@ -13,10 +13,10 @@
   "host_permissions": [
     "https://flow.google.com/*",
     "https://labs.google/*",
-    "http://127.0.0.1:8766/*",
-    "http://localhost:8766/*",
-    "ws://127.0.0.1:8766/*",
-    "ws://localhost:8766/*"
+    "http://127.0.0.1:8767/*",
+    "http://localhost:8767/*",
+    "ws://127.0.0.1:8767/*",
+    "ws://localhost:8767/*"
   ],
   "background": {
     "service_worker": "background.js"
