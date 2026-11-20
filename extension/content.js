@@ -520,65 +520,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const res = await attachMediaIngredient(request.assetKeyword);
         sendResponse(res);
       } else if (action === 'download_media') {
-        const url = request.url;
-        if (!url) {
-          sendResponse({ success: false, error: 'Missing url parameter' });
-          return;
-        }
+        const url = request.url || '';
+        // 1. Look for matching <img> or any flow image on page
+        const imgs = Array.from(document.querySelectorAll('img[src*="flow.google.com/asb/"]'));
+        let targetImg = imgs.find(img => img.src === url || (url && img.src.includes(url.split('=')[0]))) || imgs[0];
 
-        // 1. Try finding rendered <img> tag on page first to extract crisp binary via canvas (bypasses Google 403 anti-bot token check)
-        const matchImg = Array.from(document.querySelectorAll('img')).find(img => img.src === url || (url && img.src.includes(url.split('=')[0])));
-        if (matchImg && matchImg.complete && matchImg.naturalWidth > 0) {
+        if (targetImg && targetImg.complete && targetImg.naturalWidth > 0) {
           try {
             const canvas = document.createElement('canvas');
-            canvas.width = matchImg.naturalWidth;
-            canvas.height = matchImg.naturalHeight;
+            canvas.width = targetImg.naturalWidth;
+            canvas.height = targetImg.naturalHeight;
             const ctx = canvas.getContext('2d');
-            ctx.drawImage(matchImg, 0, 0);
+            ctx.drawImage(targetImg, 0, 0);
             const dataUrl = canvas.toDataURL('image/png');
             const base64 = dataUrl.split(',')[1];
             sendResponse({ success: true, base64, contentType: 'image/png', size: Math.round(base64.length * 0.75) });
             return;
-          } catch (_) {}
+          } catch (e) {
+            sendResponse({ success: false, error: 'Canvas draw error: ' + e.message });
+            return;
+          }
         }
-
-        // 2. Fallback: Create an in-memory Image element to load with browser cookie/render credentials
-        try {
-          const loadedImg = await new Promise((resolve, reject) => {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.onload = () => resolve(img);
-            img.onerror = () => reject(new Error('Image load failed'));
-            img.src = url;
-          });
-
-          const canvas = document.createElement('canvas');
-          canvas.width = loadedImg.naturalWidth;
-          canvas.height = loadedImg.naturalHeight;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(loadedImg, 0, 0);
-          const dataUrl = canvas.toDataURL('image/png');
-          const base64 = dataUrl.split(',')[1];
-          sendResponse({ success: true, base64, contentType: 'image/png', size: Math.round(base64.length * 0.75) });
-          return;
-        } catch (imgErr) {
-          // 3. Fallback: Standard fetch
-          try {
-            const resp = await fetch(url, { credentials: 'include' });
-            if (resp.ok) {
-              const blob = await resp.blob();
-              const reader = new FileReader();
-              reader.onloadend = () => {
-                const base64 = typeof reader.result === 'string' && reader.result.includes(',') ? reader.result.split(',')[1] : '';
-                sendResponse({ success: true, base64, contentType: blob.type || 'image/png', size: blob.size });
-              };
-              reader.onerror = () => sendResponse({ success: false, error: 'Failed to read blob' });
-              reader.readAsDataURL(blob);
-              return;
-            }
-          } catch (_) {}
-          sendResponse({ success: false, error: 'Failed to extract image binary via canvas or fetch' });
-        }
+        sendResponse({ success: false, error: 'No rendered flow image found on page' });
       } else if (action === 'inject_and_submit') {
         const res = await injectAndSubmitPrompt(request.prompt);
         sendResponse(res);
