@@ -246,6 +246,48 @@ function evaluateScript(script) {
   }
 }
 
+// Set prompt text directly and click/submit generation
+async function injectAndSubmitPrompt(promptText) {
+  const promptInput = document.querySelector('[aria-label="What do you want to create?"]');
+  if (!promptInput) {
+    return { success: false, error: 'Prompt input not found' };
+  }
+
+  promptInput.focus();
+  // Clear any existing text
+  const clearBtn = document.querySelector('button[aria-label="Clear prompt"]');
+  if (clearBtn) clearBtn.click();
+
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.selectNodeContents(promptInput);
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  // Insert text via execCommand which ProseMirror recognizes
+  document.execCommand('delete');
+  document.execCommand('insertText', false, promptText);
+  promptInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+  await sleep(400);
+
+  // Trigger submission via Enter key event
+  const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+  promptInput.dispatchEvent(enterDown);
+  const enterUp = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+  promptInput.dispatchEvent(enterUp);
+
+  await sleep(800);
+
+  // Fallback to start button if enter didn't start it
+  const startBtn = document.querySelector('button[aria-label="Start generation"]');
+  if (startBtn && !startBtn.disabled) {
+    startBtn.click();
+  }
+
+  return { success: true };
+}
+
 // Focus Prompt Input Box
 function focusAndClearPromptBox() {
   const promptInput = document.querySelector('[aria-label="What do you want to create?"]');
@@ -489,6 +531,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
         const base64 = typeof dataUrl === 'string' && dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
         sendResponse({ success: true, base64, contentType, size: blob.size });
+      } else if (action === 'inject_and_submit') {
+        const res = await injectAndSubmitPrompt(request.prompt);
+        sendResponse(res);
       } else if (action === 'start_generation') {
         const started = await triggerStartGeneration();
         sendResponse({ success: started, state: getUIState() });

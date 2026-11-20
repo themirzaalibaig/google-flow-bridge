@@ -177,9 +177,14 @@ async function handleGenerateRequest(payload) {
   // 3. Focus prompt box
   await sendTabMessageSafe(tab.id, { action: 'focus_prompt' }).catch(() => null);
 
-  // 4. Type prompt and submit natively via debugger
+  // 4. Type prompt and submit natively via debugger, with in-DOM fallback if debugger is unavailable
   if (payload.prompt) {
-    await typeTextViaDebugger(tab.id, payload.prompt);
+    try {
+      await typeTextViaDebugger(tab.id, payload.prompt);
+    } catch (dbgErr) {
+      console.warn('[Google Flow Bridge] Debugger attach failed in background, using in-DOM fallback:', dbgErr);
+      await sendTabMessageSafe(tab.id, { action: 'inject_and_submit', prompt: payload.prompt });
+    }
   }
 
   // 5. Short pause then check if generation started, if not click start button as fallback
