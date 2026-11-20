@@ -176,6 +176,15 @@ function inspectDOMSnapshot() {
 
 // Click element by its assigned ref ID
 function clickElementByRef(ref) {
+  // If clicking start button or prompt box, fallback to direct selector if ref attribute got wiped
+  if (ref === 'start' || ref === 'generate') {
+    const btn = document.querySelector('button[aria-label="Start generation"]');
+    if (btn) {
+      btn.click();
+      return { success: true, text: 'Start generation' };
+    }
+  }
+
   let target = document.querySelector(`[data-flow-ref="${ref}"]`);
   if (!target) {
     const iframes = Array.from(document.querySelectorAll('iframe'));
