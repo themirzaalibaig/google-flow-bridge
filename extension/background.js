@@ -194,20 +194,27 @@ async function handleGenerateRequest(payload) {
   // 6. Poll for new media to appear (timeout 90s)
   const startTime = Date.now();
   let newMediaUrls = [];
+  let latestImages = [];
   while (Date.now() - startTime < 90000) {
     await new Promise((r) => setTimeout(r, 2000));
     const curMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
     const curImages = (curMediaRes && curMediaRes.media && curMediaRes.media.images) || [];
+    if (curImages.length > 0) {
+      latestImages = curImages;
+    }
     newMediaUrls = curImages.filter((url) => !oldImages.has(url));
     if (newMediaUrls.length > 0) {
       break;
     }
   }
 
+  // Fallback to top rendered image if diff set was empty due to tab navigation/initial count
+  const returnedUrls = newMediaUrls.length > 0 ? newMediaUrls : (latestImages.slice(0, payload.count || 1));
+
   return {
-    success: true,
-    new_media: newMediaUrls,
-    media_url: newMediaUrls[0] || null,
+    success: returnedUrls.length > 0,
+    new_media: returnedUrls,
+    media_url: returnedUrls[0] || null,
     settings: configRes ? configRes.state : null
   };
 }
