@@ -72,62 +72,71 @@ async function sendCdpCommand(tabId, method, params = {}) {
   return result;
 }
 
-// Type text natively via Chrome Debugger Input.insertText
-async function typeTextViaDebugger(tabId, text) {
+// Helper to safely run CDP commands with robust attach & error handling
+async function runWithDebugger(tabId, fn) {
   const target = { tabId };
-  // Detach any stale debugger session first to ensure clean attach
-  try {
-    await chrome.debugger.detach(target);
-  } catch (e) {}
-  
-  try {
-    await chrome.debugger.attach(target, '1.3');
-  } catch (e) {
-    // If still failing, retry once
-    await new Promise(r => setTimeout(r, 200));
-    await chrome.debugger.attach(target, '1.3');
+  // Ensure debugger is attached
+  let attached = false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await chrome.debugger.attach(target, '1.3');
+      attached = true;
+      break;
+    } catch (e) {
+      const errStr = e?.message || String(e);
+      if (errStr.includes('already attached') || errStr.includes('Another debugger is already attached')) {
+        try { await chrome.debugger.detach(target); } catch (_) {}
+      }
+      await new Promise(r => setTimeout(r, 300));
+    }
   }
 
-  // Clear existing prompt text first by sending Backspace after selection
-  await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-    type: 'rawKeyDown',
-    windowsVirtualKeyCode: 8,
-    nativeVirtualKeyCode: 8,
-    key: 'Backspace'
-  });
-  await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-    type: 'keyUp',
-    windowsVirtualKeyCode: 8,
-    nativeVirtualKeyCode: 8,
-    key: 'Backspace'
-  });
-
-  // Insert the prompt text natively (bypasses CSP and triggers ProseMirror cleanly)
-  await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
-
-  // Wait briefly for ProseMirror and Angular model sync
-  await new Promise((r) => setTimeout(r, 400));
-
-  // Press Enter natively to submit the prompt directly
-  await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-    type: 'rawKeyDown',
-    windowsVirtualKeyCode: 13,
-    nativeVirtualKeyCode: 13,
-    key: 'Enter',
-    code: 'Enter'
-  });
-  await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
-    type: 'keyUp',
-    windowsVirtualKeyCode: 13,
-    nativeVirtualKeyCode: 13,
-    key: 'Enter',
-    code: 'Enter'
-  });
-
-  // Detach debugger so user doesn't see debugger banner
   try {
-    await chrome.debugger.detach(target);
-  } catch (e) {}
+    return await fn(target);
+  } finally {
+    try { await chrome.debugger.detach(target); } catch (_) {}
+  }
+}
+
+// Type text natively via Chrome Debugger Input.insertText
+async function typeTextViaDebugger(tabId, text) {
+  return await runWithDebugger(tabId, async (target) => {
+    // Clear existing prompt text first by sending Backspace after selection
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      windowsVirtualKeyCode: 8,
+      nativeVirtualKeyCode: 8,
+      key: 'Backspace'
+    });
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      windowsVirtualKeyCode: 8,
+      nativeVirtualKeyCode: 8,
+      key: 'Backspace'
+    });
+
+    // Insert the prompt text natively (bypasses CSP and triggers ProseMirror cleanly)
+    await chrome.debugger.sendCommand(target, 'Input.insertText', { text });
+
+    // Wait briefly for ProseMirror and Angular model sync
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Press Enter natively to submit the prompt directly
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+      type: 'rawKeyDown',
+      windowsVirtualKeyCode: 13,
+      nativeVirtualKeyCode: 13,
+      key: 'Enter',
+      code: 'Enter'
+    });
+    await chrome.debugger.sendCommand(target, 'Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      windowsVirtualKeyCode: 13,
+      nativeVirtualKeyCode: 13,
+      key: 'Enter',
+      code: 'Enter'
+    });
+  });
 }
 
 // Execute complete generation request
@@ -274,7 +283,7 @@ function connectWebSocket() {
             ws.send(JSON.stringify({ id, success: false, error: 'No Flow tab found' }));
             return;
           }
-          const forwardRes = await chrome.tabs.sendMessage(tab.id, { action, ...payload });
+          const forwardRes = await sendTabMessageSafe(tab.id, { action, ...payload });
           ws.send(JSON.stringify({ id, success: true, result: forwardRes }));
         } else {
           ws.send(JSON.stringify({ id, success: false, error: 'Unsupported action' }));
