@@ -516,21 +516,60 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           sendResponse({ success: false, error: 'Missing url parameter' });
           return;
         }
-        const resp = await fetch(url, { credentials: 'include' });
-        if (!resp.ok) {
-          sendResponse({ success: false, error: `HTTP ${resp.status} ${resp.statusText}` });
-          return;
+
+        // 1. Try finding rendered <img> tag on page first to extract crisp binary via canvas (bypasses Google 403 anti-bot token check)
+        const matchImg = Array.from(document.querySelectorAll('img')).find(img => img.src === url || (url && img.src.includes(url.split('=')[0])));
+        if (matchImg && matchImg.complete && matchImg.naturalWidth > 0) {
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = matchImg.naturalWidth;
+            canvas.height = matchImg.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(matchImg, 0, 0);
+            const dataUrl = canvas.toDataURL('image/png');
+            const base64 = dataUrl.split(',')[1];
+            sendResponse({ success: true, base64, contentType: 'image/png', size: Math.round(base64.length * 0.75) });
+            return;
+          } catch (_) {}
         }
-        const blob = await resp.blob();
-        const contentType = blob.type || resp.headers.get('content-type') || 'application/octet-stream';
-        const dataUrl = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(reader.result);
-          reader.onerror = () => reject(new Error('Failed to read media blob'));
-          reader.readAsDataURL(blob);
-        });
-        const base64 = typeof dataUrl === 'string' && dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
-        sendResponse({ success: true, base64, contentType, size: blob.size });
+
+        // 2. Fallback: Create an in-memory Image element to load with browser cookie/render credentials
+        try {
+          const loadedImg = await new Promise((resolve, reject) => {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Image load failed'));
+            img.src = url;
+          });
+
+          const canvas = document.createElement('canvas');
+          canvas.width = loadedImg.naturalWidth;
+          canvas.height = loadedImg.naturalHeight;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(loadedImg, 0, 0);
+          const dataUrl = canvas.toDataURL('image/png');
+          const base64 = dataUrl.split(',')[1];
+          sendResponse({ success: true, base64, contentType: 'image/png', size: Math.round(base64.length * 0.75) });
+          return;
+        } catch (imgErr) {
+          // 3. Fallback: Standard fetch
+          try {
+            const resp = await fetch(url, { credentials: 'include' });
+            if (resp.ok) {
+              const blob = await resp.blob();
+              const reader = new FileReader();
+              reader.onloadend = () => {
+                const base64 = typeof reader.result === 'string' && reader.result.includes(',') ? reader.result.split(',')[1] : '';
+                sendResponse({ success: true, base64, contentType: blob.type || 'image/png', size: blob.size });
+              };
+              reader.onerror = () => sendResponse({ success: false, error: 'Failed to read blob' });
+              reader.readAsDataURL(blob);
+              return;
+            }
+          } catch (_) {}
+          sendResponse({ success: false, error: 'Failed to extract image binary via canvas or fetch' });
+        }
       } else if (action === 'inject_and_submit') {
         const res = await injectAndSubmitPrompt(request.prompt);
         sendResponse(res);
