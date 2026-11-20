@@ -8,11 +8,21 @@ const LOCAL_SERVER_WS = 'ws://127.0.0.1:8776/ws';
 let ws = null;
 let reconnectTimer = null;
 
-// Find active or open Google Flow tab; if none exists, open one automatically and wait for it
+// Find active or open Google Flow tab and activate it so CDP and ProseMirror are in foreground
 async function getFlowTab() {
   const tabs = await chrome.tabs.query({ url: ['https://flow.google.com/*', 'https://labs.google/fx/tools/flow/*'] });
+  let tab = null;
   if (tabs.length > 0) {
-    return tabs[0];
+    tab = tabs[0];
+    // Activate the tab and window so Chrome Debugger has active focus
+    try {
+      await chrome.tabs.update(tab.id, { active: true });
+      if (tab.windowId) {
+        await chrome.windows.update(tab.windowId, { focused: true });
+      }
+      await new Promise(r => setTimeout(r, 300));
+    } catch (_) {}
+    return tab;
   }
 
   // Auto-open Google Flow tab if not open
@@ -28,7 +38,6 @@ async function getFlowTab() {
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
-    // Fallback timeout after 15s
     setTimeout(() => {
       chrome.tabs.onUpdated.removeListener(listener);
       resolve();
