@@ -48,9 +48,27 @@ curl -s http://127.0.0.1:8769/health
 ```
 Expected response:
 ```json
-{"status": "healthy", "extension_connected": true, "active_clients": 1}
+{
+  "status": "healthy",
+  "extension_connected": true,
+  "active_clients": 1,
+  "accounts": [
+    {
+      "client_id": "a1b2c3d4",
+      "email": "user@gmail.com",
+      "url": "https://flow.google.com/project/...",
+      "connected_at": 1795123582.2
+    }
+  ]
+}
 ```
 If `extension_connected` is `false`, confirm a `https://flow.google.com/` tab is open and reload the extension in `chrome://extensions/`.
+
+### Multi-Account Routing & Automatic Failover
+- Multiple Chrome profiles/accounts can connect to the same bridge simultaneously.
+- By default, requests are distributed **round-robin** across connected accounts.
+- Pass `account` (email substring or `client_id`) to `POST /v1/images/generations`, `POST /v1/videos/generations`, or MCP `tools/call` arguments to pin a specific profile.
+- If a target or background profile fails (e.g., minimized window or unmounted tab), the bridge **automatically fails over** to the next connected account and reports `fallback_used` / `executed_account`.
 
 ---
 
@@ -80,11 +98,11 @@ Base URL: `http://127.0.0.1:8769`
 
 | Method | Path | Description |
 | :--- | :--- | :--- |
-| `GET` | `/health` | Bridge health & extension WebSocket status |
+| `GET` | `/health` | Bridge health, extension WebSocket status, and connected `accounts` list |
 | `GET` | `/v1/models` | List supported image and video models |
-| `POST` | `/v1/images/generations` | Generate images (`prompt`, `model`, `size` or `aspect_ratio`, `n`, `agent_mode`) |
-| `POST` | `/v1/videos/generations` | Generate videos (`prompt`, `model`, `aspect_ratio`) |
-| `GET` | `/v1/media/download?url=...` | Download an authenticated Flow media URL as raw bytes |
+| `POST` | `/v1/images/generations` | Generate images (`prompt`, `model`, `size` or `aspect_ratio`, `n`, `agent_mode`, optional `account`) |
+| `POST` | `/v1/videos/generations` | Generate videos (`prompt`, `model`, `aspect_ratio`, optional `account`) |
+| `GET` | `/v1/media/download?url=...` | Download an authenticated Flow media URL as raw bytes (with canvas fallback) |
 | `POST` | `/v1/media/download` | Download a Flow media URL (`url`, optional `output_path` to save on disk) |
 | `POST` | `/mcp` | JSON-RPC endpoint for MCP tool calls |
 
@@ -108,7 +126,14 @@ response = client.images.generate(
 print("Generated Image URL:", response.data[0].url)
 ```
 
-### Example — cURL
+### Required Download Workflow (Do Not Fetch Flow URLs Directly)
+`POST /v1/images/generations`, `POST /v1/videos/generations`, `flow_generate_image`, and `flow_generate_video` return authenticated `https://flow.google.com/asb/...` URLs that **cannot** be downloaded directly with `curl` or `requests` (missing browser session cookies).
+
+Whenever a generation returns a `url`, **immediately download it through the bridge**:
+- **REST:** `POST /v1/media/download` with `{"url": "<returned_url>", "output_path": "./output.png"}` (or `GET /v1/media/download?url=<encoded_url>`).
+- **MCP:** `flow_download_media(url="<returned_url>", output_path="./output.png")`.
+
+### Example — cURL (Generate + Download)
 ```bash
 curl -s -X POST http://127.0.0.1:8769/v1/images/generations \
   -H "Content-Type: application/json" \
@@ -149,12 +174,15 @@ curl -s -X POST http://127.0.0.1:8769/v1/images/generations \
   - `model` (*string*): `"Veo 3.1 - Lite"` (default), `"Omni 1.2 Flash"`
 
 ### Project & Account Tools
-- **`flow_get_balance`**: Returns available Flow credits, reset schedule, and account email.
-- **`flow_list_projects`**: Lists available Flow projects or returns current project details.
+- **`flow_list_accounts()`**: Lists all connected Google Flow browser profiles/accounts (`client_id`, `email`, `url`, `connected_at`).
+- **`flow_get_balance()`**: Returns available Flow credits, reset schedule, and account email.
+- **`flow_list_projects()`**: Lists available Flow projects or returns current project details.
 - **`flow_select_project(project_id)`**: Navigates to a project by UUID.
 - **`flow_create_project()`**: Creates a new Flow project canvas.
 - **`flow_attach_media(asset_keyword?)`**: Attaches an existing project image or character as an ingredient chip.
-- **`flow_download_media(url, output_path?)`**: Downloads an authenticated Flow image or video URL through the Chrome extension session and saves it locally (returns `{ success, url, output_path, content_type, size }`).
+- **`flow_download_media(url, output_path?)`**: Downloads an authenticated Flow image or video URL through the Chrome extension session (with canvas binary fallback) and saves it locally (returns `{ success, url, output_path, content_type, size }`).
+
+*(All MCP `tools/call` arguments also accept an optional `account` string — email substring or `client_id` — to target a specific connected profile.)*
 
 ### Pure DOM Driving Tools (Dialogs, Announcements, Custom Flows)
 When handling unexpected modals, terms prompts, or custom controls, inspect and drive the live DOM without hardcoded selectors:

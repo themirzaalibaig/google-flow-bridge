@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8777/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8779/ws';
 let ws = null;
 let reconnectTimer = null;
 
@@ -154,15 +154,61 @@ async function typeTextViaDebugger(tabId, text) {
 }
 
 // Execute complete generation request
+// Fast submit-only function: Configures, types prompt, clicks send, and returns immediately in 2-3s!
+async function handleSubmitOnly(payload) {
+  const tab = await getFlowTab();
+  if (!tab) {
+    throw new Error('No open Google Flow tab found. Please open https://flow.google.com/ in Chrome.');
+  }
+
+  // 1. Configure settings
+  await sendTabMessageSafe(tab.id, {
+    action: 'configure',
+    mode: payload.mode || (payload.type === 'video' ? 'video' : 'image'),
+    aspectRatio: payload.aspect_ratio || payload.aspectRatio || '1:1',
+    count: payload.count || payload.n || 1,
+    model: payload.model || (payload.type === 'video' ? 'Veo' : 'Banana'),
+    agentMode: typeof payload.agent_mode === 'boolean' ? payload.agent_mode : false
+  }).catch(() => null);
+
+  // 2. Focus prompt box
+  await sendTabMessageSafe(tab.id, { action: 'focus_prompt' }).catch(() => null);
+
+  // 3. Type and submit prompt
+  if (payload.prompt) {
+    try {
+      await typeTextViaDebugger(tab.id, payload.prompt);
+    } catch (dbgErr) {
+      console.warn('[Google Flow Bridge] Debugger submit failed, using DOM fallback:', dbgErr);
+      await sendTabMessageSafe(tab.id, { action: 'inject_and_submit', prompt: payload.prompt });
+    }
+  }
+
+  // 4. Fallback click on Start button to be 100% sure generation began
+  await new Promise((r) => setTimeout(r, 600));
+  await sendTabMessageSafe(tab.id, { action: 'start_generation' }).catch(() => null);
+
+  return {
+    success: true,
+    submitted: true,
+    mode: payload.mode || 'image',
+    prompt: payload.prompt,
+    timestamp: Date.now()
+  };
+}
+
 async function handleGenerateRequest(payload) {
   const tab = await getFlowTab();
   if (!tab) {
     throw new Error('No open Google Flow tab found. Please open https://flow.google.com/ in Chrome.');
   }
 
-  // 1. Get initial media before generation
-  const initialMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
-  const oldImages = new Set((initialMediaRes && initialMediaRes.media && initialMediaRes.media.images) || []);
+  // 1. Get initial media before configuration
+  const initialMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' });
+  if (!initialMediaRes || !initialMediaRes.success || !initialMediaRes.media) {
+    throw new Error('Failed to read initial media baseline from Flow tab');
+  }
+  const oldImages = new Set(initialMediaRes.media.images || []);
 
   // 2. Configure UI settings (mode, aspect ratio, model, count, agent mode)
   const configRes = await sendTabMessageSafe(tab.id, {
@@ -174,8 +220,13 @@ async function handleGenerateRequest(payload) {
     agentMode: typeof payload.agent_mode === 'boolean' ? payload.agent_mode : false
   }).catch(() => null);
 
-  // 3. Focus prompt box
+  // 3. Focus prompt box and re-snapshot existing media so any UI re-render during
+  //    configure/focus is folded into the baseline rather than treated as new output.
   await sendTabMessageSafe(tab.id, { action: 'focus_prompt' }).catch(() => null);
+  const preSubmitMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
+  if (preSubmitMediaRes && preSubmitMediaRes.media && Array.isArray(preSubmitMediaRes.media.images)) {
+    preSubmitMediaRes.media.images.forEach((url) => oldImages.add(url));
+  }
 
   // 4. Type prompt and submit natively via debugger, with in-DOM fallback if debugger is unavailable
   if (payload.prompt) {
@@ -183,38 +234,47 @@ async function handleGenerateRequest(payload) {
       await typeTextViaDebugger(tab.id, payload.prompt);
     } catch (dbgErr) {
       console.warn('[Google Flow Bridge] Debugger attach failed in background, using in-DOM fallback:', dbgErr);
-      await sendTabMessageSafe(tab.id, { action: 'inject_and_submit', prompt: payload.prompt });
+      const injectRes = await sendTabMessageSafe(tab.id, { action: 'inject_and_submit', prompt: payload.prompt });
+      if (!injectRes || !injectRes.success) {
+        throw new Error('Failed to inject and submit prompt in Flow tab');
+      }
     }
   }
 
-  // 5. Short pause then check if generation started, if not click start button as fallback
+  // 5. Short pause then click start button as fallback if Enter did not submit
   await new Promise((r) => setTimeout(r, 1000));
   await sendTabMessageSafe(tab.id, { action: 'start_generation' }).catch(() => null);
 
   // 6. Poll for new media to appear (timeout 90s)
+  const expectedCount = payload.count || payload.n || 1;
   const startTime = Date.now();
   let newMediaUrls = [];
-  let latestImages = [];
   while (Date.now() - startTime < 90000) {
     await new Promise((r) => setTimeout(r, 2000));
     const curMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
     const curImages = (curMediaRes && curMediaRes.media && curMediaRes.media.images) || [];
-    if (curImages.length > 0) {
-      latestImages = curImages;
-    }
     newMediaUrls = curImages.filter((url) => !oldImages.has(url));
-    if (newMediaUrls.length > 0) {
+    if (newMediaUrls.length >= expectedCount) {
+      break;
+    }
+    // If at least one new image appeared, give a brief window for remaining batch items then return
+    if (newMediaUrls.length > 0 && Date.now() - startTime > 15000) {
+      await new Promise((r) => setTimeout(r, 2500));
+      const settleRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
+      const settleImages = (settleRes && settleRes.media && settleRes.media.images) || [];
+      newMediaUrls = settleImages.filter((url) => !oldImages.has(url));
       break;
     }
   }
 
-  // Fallback to top rendered image if diff set was empty due to tab navigation/initial count
-  const returnedUrls = newMediaUrls.length > 0 ? newMediaUrls : (latestImages.slice(0, payload.count || 1));
+  if (newMediaUrls.length === 0) {
+    throw new Error('Timed out waiting for newly generated media (no new images appeared)');
+  }
 
   return {
-    success: returnedUrls.length > 0,
-    new_media: returnedUrls,
-    media_url: returnedUrls[0] || null,
+    success: true,
+    new_media: newMediaUrls,
+    media_url: newMediaUrls[0],
     settings: configRes ? configRes.state : null
   };
 }
@@ -266,7 +326,10 @@ function connectWebSocket() {
 
       const { id, action, payload } = data;
       try {
-        if (action === 'generate') {
+        if (action === 'submit') {
+          const result = await handleSubmitOnly(payload);
+          ws.send(JSON.stringify({ id, success: true, result }));
+        } else if (action === 'generate') {
           const result = await handleGenerateRequest(payload);
           ws.send(JSON.stringify({ id, success: true, result }));
         } else if (action === 'get_state') {

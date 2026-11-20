@@ -210,6 +210,21 @@ async def dispatch_to_extension(
 # OpenAI-Compatible Models & Schemas
 # ---------------------------------------------------------------------------
 
+class BulkPromptItem(BaseModel):
+    prompt: str
+    aspect_ratio: Optional[str] = "1:1"
+    count: Optional[int] = 1
+    model: Optional[str] = "🍌 Nano Banana 2.1"
+    agent_mode: Optional[bool] = False
+    account: Optional[str] = None
+
+class BulkGenerationRequest(BaseModel):
+    prompts: List[str] = []
+    items: Optional[List[BulkPromptItem]] = None
+    aspect_ratio: Optional[str] = "1:1"
+    model: Optional[str] = "🍌 Nano Banana 2.1"
+    wait: Optional[bool] = False
+
 class ImageGenerationRequest(BaseModel):
     prompt: str
     model: Optional[str] = "🍌 Nano Banana 2.1"
@@ -218,6 +233,7 @@ class ImageGenerationRequest(BaseModel):
     aspect_ratio: Optional[str] = None
     agent_mode: Optional[bool] = False
     account: Optional[str] = None
+    wait: Optional[bool] = True
     response_format: Optional[str] = "url"
 
 class VideoGenerationRequest(BaseModel):
@@ -337,6 +353,44 @@ async def generate_image(req: ImageGenerationRequest):
         "data": data
     }
 
+@app.post("/v1/images/bulk")
+async def bulk_generate_images(req: BulkGenerationRequest):
+    """Submit multiple prompts rapidly into Google Flow parallel generation pipeline without waiting between prompts."""
+    submissions = []
+    prompts_to_run = []
+    
+    if req.items:
+        prompts_to_run = req.items
+    elif req.prompts:
+        prompts_to_run = [
+            BulkPromptItem(prompt=p, aspect_ratio=req.aspect_ratio, model=req.model)
+            for p in req.prompts
+        ]
+
+    for item in prompts_to_run:
+        payload = {
+            "mode": "image",
+            "prompt": item.prompt,
+            "model": item.model or req.model or "🍌 Nano Banana 2.1",
+            "count": item.count or 1,
+            "aspect_ratio": item.aspect_ratio or req.aspect_ratio or "1:1",
+            "agent_mode": item.agent_mode or False
+        }
+        res = await dispatch_to_extension("submit", payload, timeout=15.0, account=item.account)
+        submissions.append({
+            "prompt": item.prompt,
+            "status": "submitted",
+            "timestamp": time.time()
+        })
+        await asyncio.sleep(0.4)
+
+    return {
+        "created": int(time.time()),
+        "total": len(submissions),
+        "status": "all_submitted_in_parallel",
+        "submissions": submissions
+    }
+
 @app.post("/v1/videos/generations")
 async def generate_video(req: VideoGenerationRequest):
     payload = {
@@ -378,6 +432,23 @@ async def download_media_post(req: MediaDownloadRequest):
 # ---------------------------------------------------------------------------
 
 MCP_TOOLS = [
+    {
+        "name": "flow_bulk_submit",
+        "description": "Submit a list of multiple prompts rapidly into Google Flow in parallel without waiting for previous images to finish.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "prompts": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Array of prompt strings to submit in rapid succession."
+                },
+                "aspect_ratio": {"type": "string", "enum": ["16:9", "4:3", "1:1", "3:4", "9:16"], "default": "1:1"},
+                "model": {"type": "string", "default": "🍌 Nano Banana 2.1"}
+            },
+            "required": ["prompts"]
+        }
+    },
     {
         "name": "flow_list_accounts",
         "description": "List all connected Google Flow browser profiles/accounts, their client IDs, and active tab URLs.",
@@ -548,7 +619,32 @@ async def mcp_rpc(request: Request):
         args = params.get("arguments", {})
         account = args.get("account")
 
-        if tool_name == "flow_list_accounts":
+        if tool_name == "flow_bulk_submit":
+            prompts = args.get("prompts", [])
+            aspect_ratio = args.get("aspect_ratio", "1:1")
+            model = args.get("model", "2.1")
+            submitted = []
+            for p in prompts:
+                payload = {
+                    "mode": "image",
+                    "prompt": p,
+                    "model": model,
+                    "count": 1,
+                    "aspect_ratio": aspect_ratio,
+                    "agent_mode": False
+                }
+                res = await dispatch_to_extension("submit", payload, timeout=15.0, account=account)
+                submitted.append({"prompt": p, "result": res})
+                await asyncio.sleep(0.4)
+            return JSONResponse({
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {
+                    "content": [{"type": "text", "text": json.dumps({"submitted_count": len(submitted), "items": submitted}, indent=2)}]
+                }
+            })
+
+        elif tool_name == "flow_list_accounts":
             connected_accounts = [
                 {
                     "client_id": meta.get("client_id"),
