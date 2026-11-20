@@ -8,43 +8,43 @@ const LOCAL_SERVER_WS = 'ws://127.0.0.1:8776/ws';
 let ws = null;
 let reconnectTimer = null;
 
-// Find active or open Google Flow tab and activate it so CDP and ProseMirror are in foreground
+// Find active or open Google Flow tab without forcing window focus/fullscreen
 async function getFlowTab() {
   const tabs = await chrome.tabs.query({ url: ['https://flow.google.com/*', 'https://labs.google/fx/tools/flow/*'] });
-  let tab = null;
   if (tabs.length > 0) {
-    tab = tabs[0];
-    // Activate the tab and window so Chrome Debugger has active focus
-    try {
-      await chrome.tabs.update(tab.id, { active: true });
-      if (tab.windowId) {
-        await chrome.windows.update(tab.windowId, { focused: true });
-      }
-      await new Promise(r => setTimeout(r, 300));
-    } catch (_) {}
-    return tab;
+    return tabs[0];
   }
 
-  // Auto-open Google Flow tab if not open
-  console.log('[Google Flow Bridge] No Flow tab found. Opening https://flow.google.com/ automatically...');
-  const newTab = await chrome.tabs.create({ url: 'https://flow.google.com/', active: true });
-  
-  // Wait for tab to load and content script to initialize
-  await new Promise((resolve) => {
-    const listener = (tabId, changeInfo) => {
-      if (tabId === newTab.id && changeInfo.status === 'complete') {
-        chrome.tabs.onUpdated.removeListener(listener);
-        setTimeout(resolve, 2500); // Allow content script to attach
-      }
-    };
-    chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      resolve();
-    }, 15000);
+  // Auto-open Google Flow in a compact side window if not open
+  console.log('[Google Flow Bridge] No Flow tab found. Opening https://flow.google.com/ in a compact window...');
+  const newWin = await chrome.windows.create({
+    url: 'https://flow.google.com/',
+    type: 'popup',
+    width: 900,
+    height: 700,
+    focused: false
   });
 
-  return newTab;
+  const newTab = newWin.tabs?.[0];
+  if (newTab) {
+    await new Promise((resolve) => {
+      const listener = (tabId, changeInfo) => {
+        if (tabId === newTab.id && changeInfo.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(listener);
+          setTimeout(resolve, 2500);
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      setTimeout(() => {
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }, 15000);
+    });
+    return newTab;
+  }
+
+  const fallbackTabs = await chrome.tabs.query({ url: ['https://flow.google.com/*', 'https://labs.google/fx/tools/flow/*'] });
+  return fallbackTabs[0] || null;
 }
 
 // Safe message sender to tabs with retry and auto-injection
