@@ -115,6 +115,21 @@ async def websocket_endpoint(websocket: WebSocket):
             active_websockets.remove(websocket)
         client_metadata.pop(websocket, None)
 
+async def _send_single_request(target_ws: WebSocket, action: str, payload: Dict[str, Any], timeout: float) -> Dict[str, Any]:
+    req_id = str(uuid.uuid4())
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    pending_requests[req_id] = future
+
+    message = json.dumps({"id": req_id, "action": action, "payload": payload})
+    await target_ws.send_text(message)
+
+    try:
+        return await asyncio.wait_for(future, timeout=timeout)
+    except asyncio.TimeoutError:
+        pending_requests.pop(req_id, None)
+        raise TimeoutError(f"Operation timed out after {timeout} seconds.")
+
 async def dispatch_to_extension(
     action: str,
     payload: Dict[str, Any],
@@ -128,42 +143,68 @@ async def dispatch_to_extension(
             detail="No Chrome Extension connected. Please open flow.google.com and ensure Google Flow Bridge extension is enabled."
         )
 
-    # 1. Target specific account if requested
-    target_ws: Optional[WebSocket] = None
+    # Build prioritized list of candidate websockets
+    candidate_ws_list: List[WebSocket] = []
+
+    # 1. If a specific account was requested, put it first
     if account:
         for ws, meta in client_metadata.items():
             email = (meta.get("email") or "").lower()
             if account.lower() in email or account.lower() == meta.get("client_id", "").lower():
-                target_ws = ws
+                candidate_ws_list.append(ws)
                 break
-        if not target_ws:
+        if not candidate_ws_list:
             available = [meta.get("email") or meta.get("client_id") for meta in client_metadata.values()]
             raise HTTPException(
                 status_code=404,
                 detail=f"Requested account '{account}' not found among connected clients: {available}"
             )
-
-    # 2. If no specific account requested, use round-robin load balancing across all connected accounts
-    if not target_ws:
+        # Add remaining websockets as fallbacks
+        for ws in active_websockets:
+            if ws not in candidate_ws_list and ws in client_metadata:
+                candidate_ws_list.append(ws)
+    else:
+        # 2. Round-robin order across connected accounts
         valid_ws_list = [ws for ws in active_websockets if ws in client_metadata]
         if not valid_ws_list:
-            valid_ws_list = active_websockets
-        target_ws = valid_ws_list[_round_robin_idx % len(valid_ws_list)]
+            valid_ws_list = list(active_websockets)
+        
+        n = len(valid_ws_list)
+        start_idx = _round_robin_idx % n
         _round_robin_idx += 1
+        candidate_ws_list = [valid_ws_list[(start_idx + i) % n] for i in range(n)]
 
-    req_id = str(uuid.uuid4())
-    loop = asyncio.get_running_loop()
-    future = loop.create_future()
-    pending_requests[req_id] = future
-
-    message = json.dumps({"id": req_id, "action": action, "payload": payload})
-    await target_ws.send_text(message)
-
-    try:
-        return await asyncio.wait_for(future, timeout=timeout)
-    except asyncio.TimeoutError:
-        pending_requests.pop(req_id, None)
-        raise HTTPException(status_code=504, detail=f"Operation timed out after {timeout} seconds.")
+    # Try each candidate account in order with descriptive error diagnostics and automatic fallback
+    last_error_msg = ""
+    for idx, ws in enumerate(candidate_ws_list):
+        meta = client_metadata.get(ws, {})
+        account_label = meta.get("email") or meta.get("client_id") or "unknown"
+        logger.info(f"Dispatching '{action}' to account {account_label} (candidate {idx + 1}/{len(candidate_ws_list)})")
+        
+        try:
+            result = await _send_single_request(ws, action, payload, timeout=timeout)
+            if idx > 0:
+                logger.info(f"Fallback to account {account_label} succeeded!")
+                if isinstance(result, dict):
+                    result["fallback_used"] = True
+                    result["executed_account"] = account_label
+            return result
+        except Exception as e:
+            err_str = str(e)
+            diagnostic = f"Account {account_label} failed ({err_str}). It may be minimized, in the background, or its tab unmounted."
+            logger.warning(diagnostic)
+            last_error_msg = diagnostic
+            # If there are other connected accounts, immediately try the next working account!
+            if idx < len(candidate_ws_list) - 1:
+                next_meta = client_metadata.get(candidate_ws_list[idx + 1], {})
+                next_label = next_meta.get("email") or next_meta.get("client_id") or "next"
+                logger.info(f"Automatically falling back to working account: {next_label}...")
+                continue
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"All connected accounts failed. Last diagnostic: {last_error_msg}"
+                )
 
 # ---------------------------------------------------------------------------
 # OpenAI-Compatible Models & Schemas
