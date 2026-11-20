@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8774/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8776/ws';
 let ws = null;
 let reconnectTimer = null;
 
@@ -38,7 +38,29 @@ async function getFlowTab() {
   return newTab;
 }
 
-// Send CDP command with automatic attach/detach
+// Safe message sender to tabs with retry and auto-injection
+async function sendTabMessageSafe(tabId, message, retries = 3) {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const response = await chrome.tabs.sendMessage(tabId, message);
+      return response;
+    } catch (err) {
+      const errStr = err?.message || String(err);
+      if (errStr.includes('Receiving end does not exist') || errStr.includes('Could not establish connection')) {
+        // Content script might need to be re-injected if the tab was loaded before extension reload
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId },
+            files: ['content.js']
+          });
+          await new Promise(r => setTimeout(r, 400));
+        } catch (injErr) {}
+      }
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, 600));
+    }
+  }
+}
 async function sendCdpCommand(tabId, method, params = {}) {
   const target = { tabId };
   try {
@@ -116,21 +138,21 @@ async function handleGenerateRequest(payload) {
   }
 
   // 1. Get initial media before generation
-  const initialMediaRes = await chrome.tabs.sendMessage(tab.id, { action: 'get_media' });
+  const initialMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
   const oldImages = new Set((initialMediaRes && initialMediaRes.media && initialMediaRes.media.images) || []);
 
   // 2. Configure UI settings (mode, aspect ratio, model, count, agent mode)
-  const configRes = await chrome.tabs.sendMessage(tab.id, {
+  const configRes = await sendTabMessageSafe(tab.id, {
     action: 'configure',
     mode: payload.mode || (payload.type === 'video' ? 'video' : 'image'),
     aspectRatio: payload.aspect_ratio || payload.aspectRatio || '1:1',
     count: payload.count || payload.n || 1,
     model: payload.model || (payload.type === 'video' ? 'Veo' : 'Banana'),
     agentMode: typeof payload.agent_mode === 'boolean' ? payload.agent_mode : false
-  });
+  }).catch(() => null);
 
   // 3. Focus prompt box
-  await chrome.tabs.sendMessage(tab.id, { action: 'focus_prompt' });
+  await sendTabMessageSafe(tab.id, { action: 'focus_prompt' }).catch(() => null);
 
   // 4. Type prompt and submit natively via debugger
   if (payload.prompt) {
@@ -139,14 +161,14 @@ async function handleGenerateRequest(payload) {
 
   // 5. Short pause then check if generation started, if not click start button as fallback
   await new Promise((r) => setTimeout(r, 1000));
-  await chrome.tabs.sendMessage(tab.id, { action: 'start_generation' });
+  await sendTabMessageSafe(tab.id, { action: 'start_generation' }).catch(() => null);
 
   // 6. Poll for new media to appear (timeout 90s)
   const startTime = Date.now();
   let newMediaUrls = [];
   while (Date.now() - startTime < 90000) {
     await new Promise((r) => setTimeout(r, 2000));
-    const curMediaRes = await chrome.tabs.sendMessage(tab.id, { action: 'get_media' });
+    const curMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
     const curImages = (curMediaRes && curMediaRes.media && curMediaRes.media.images) || [];
     newMediaUrls = curImages.filter((url) => !oldImages.has(url));
     if (newMediaUrls.length > 0) {

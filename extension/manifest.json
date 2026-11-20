@@ -8,15 +8,16 @@
     "activeTab",
     "debugger",
     "storage",
+    "scripting",
     "alarms"
   ],
   "host_permissions": [
     "https://flow.google.com/*",
     "https://labs.google/*",
-    "http://127.0.0.1:8774/*",
-    "http://localhost:8774/*",
-    "ws://127.0.0.1:8774/*",
-    "ws://localhost:8774/*"
+    "http://127.0.0.1:8776/*",
+    "http://localhost:8776/*",
+    "ws://127.0.0.1:8776/*",
+    "ws://localhost:8776/*"
   ],
   "background": {
     "service_worker": "background.js"
