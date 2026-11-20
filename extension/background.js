@@ -75,20 +75,25 @@ async function sendCdpCommand(tabId, method, params = {}) {
 // Helper to safely run CDP commands with robust attach & error handling
 async function runWithDebugger(tabId, fn) {
   const target = { tabId };
-  // Ensure debugger is attached
   let attached = false;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       await chrome.debugger.attach(target, '1.3');
       attached = true;
       break;
     } catch (e) {
+      lastError = e;
       const errStr = e?.message || String(e);
       if (errStr.includes('already attached') || errStr.includes('Another debugger is already attached')) {
         try { await chrome.debugger.detach(target); } catch (_) {}
       }
-      await new Promise(r => setTimeout(r, 300));
+      await new Promise(r => setTimeout(r, 400));
     }
+  }
+
+  if (!attached) {
+    throw new Error(`Failed to attach debugger to tab ${tabId}: ${lastError?.message || lastError}`);
   }
 
   try {
