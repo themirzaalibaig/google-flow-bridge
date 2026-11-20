@@ -176,10 +176,15 @@ class ImageGenerationRequest(BaseModel):
     size: Optional[str] = "1024x1024" # standard OpenAI size format or 1:1, 16:9, etc.
     aspect_ratio: Optional[str] = None
     agent_mode: Optional[bool] = False
+    account: Optional[str] = None
     response_format: Optional[str] = "url"
 
 class VideoGenerationRequest(BaseModel):
     prompt: str
+    model: Optional[str] = "Veo 3.1 - Lite"
+    aspect_ratio: Optional[str] = "16:9"
+    n: Optional[int] = 1
+    account: Optional[str] = None
     model: Optional[str] = "Veo 3.1 - Lite"
     aspect_ratio: Optional[str] = "16:9"
     n: Optional[int] = 1
