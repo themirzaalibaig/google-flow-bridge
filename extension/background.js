@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8776/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8777/ws';
 let ws = null;
 let reconnectTimer = null;
 
