@@ -278,21 +278,21 @@ async function injectAndSubmitPrompt(promptText) {
   document.execCommand('insertText', false, promptText);
   promptInput.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
 
-  await sleep(400);
+  await sleep(500);
 
-  // Trigger submission via Enter key event
+  // Click start button directly
+  const startBtn = document.querySelector('button[aria-label="Start generation"]');
+  if (startBtn) {
+    startBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    startBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    startBtn.click();
+  }
+
+  // Also dispatch Enter as secondary trigger
   const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
   promptInput.dispatchEvent(enterDown);
   const enterUp = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
   promptInput.dispatchEvent(enterUp);
-
-  await sleep(800);
-
-  // Fallback to start button if enter didn't start it
-  const startBtn = document.querySelector('button[aria-label="Start generation"]');
-  if (startBtn && !startBtn.disabled) {
-    startBtn.click();
-  }
 
   return { success: true };
 }
