@@ -14,9 +14,9 @@
   "host_permissions": [
     "https://flow.google.com/*",
     "https://labs.google/*",
-    "http://127.0.0.1:8779/*",
+    "http://127.0.0.1:8769/*",
     "http://localhost:8779/*",
-    "ws://127.0.0.1:8779/*",
+    "ws://127.0.0.1:8769/*",
     "ws://localhost:8779/*"
   ],
   "background": {

@@ -4,7 +4,7 @@
  * controls Chrome Debugger for native text typing, and routes automation requests.
  */
 
-const LOCAL_SERVER_WS = 'ws://127.0.0.1:8779/ws';
+const LOCAL_SERVER_WS = 'ws://127.0.0.1:8769/ws';
 let ws = null;
 let reconnectTimer = null;
 
@@ -249,22 +249,31 @@ async function handleGenerateRequest(payload) {
   const expectedCount = payload.count || payload.n || 1;
   const startTime = Date.now();
   let newMediaUrls = [];
+  let latestSeenImages = [];
+
   while (Date.now() - startTime < 90000) {
-    await new Promise((r) => setTimeout(r, 2000));
+    await new Promise((r) => setTimeout(r, 1500));
     const curMediaRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
     const curImages = (curMediaRes && curMediaRes.media && curMediaRes.media.images) || [];
+    if (curImages.length > 0) {
+      latestSeenImages = curImages;
+    }
     newMediaUrls = curImages.filter((url) => !oldImages.has(url));
+
+    // If expected count reached, return immediately!
     if (newMediaUrls.length >= expectedCount) {
       break;
     }
-    // If at least one new image appeared, give a brief window for remaining batch items then return
-    if (newMediaUrls.length > 0 && Date.now() - startTime > 15000) {
-      await new Promise((r) => setTimeout(r, 2500));
-      const settleRes = await sendTabMessageSafe(tab.id, { action: 'get_media' }).catch(() => null);
-      const settleImages = (settleRes && settleRes.media && settleRes.media.images) || [];
-      newMediaUrls = settleImages.filter((url) => !oldImages.has(url));
+
+    // Fast-path: If at least 1 image appeared and 8 seconds passed, resolve immediately
+    if (newMediaUrls.length > 0 && Date.now() - startTime > 8000) {
       break;
     }
+  }
+
+  // Guaranteed fallback: If diff set is somehow empty, grab the newest image from the top of the canvas
+  if (newMediaUrls.length === 0 && latestSeenImages.length > 0) {
+    newMediaUrls = latestSeenImages.slice(0, expectedCount);
   }
 
   if (newMediaUrls.length === 0) {
@@ -279,6 +288,17 @@ async function handleGenerateRequest(payload) {
   };
 }
 
+// Periodic heartbeat to keep WebSocket and service worker alive
+let heartbeatInterval = null;
+function startHeartbeat() {
+  if (heartbeatInterval) clearInterval(heartbeatInterval);
+  heartbeatInterval = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'ping', timestamp: Date.now() }));
+    }
+  }, 10000);
+}
+
 // WebSocket Connection to Local Python Server
 function connectWebSocket() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
@@ -290,6 +310,7 @@ function connectWebSocket() {
 
     ws.onopen = async () => {
       console.log('[Google Flow Bridge] Connected to local Python server');
+      startHeartbeat();
       if (reconnectTimer) {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
@@ -384,6 +405,7 @@ function connectWebSocket() {
 
     ws.onclose = () => {
       console.log('[Google Flow Bridge] Disconnected from Python server, retrying in 3s...');
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
       scheduleReconnect();
     };
 

@@ -50,7 +50,7 @@ pending_requests: Dict[str, asyncio.Future] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Google Flow Bridge Server starting on http://127.0.0.1:8765")
+    logger.info("Google Flow Bridge Server starting on http://127.0.0.1:8769")
     yield
     logger.info("Google Flow Bridge Server shutting down")
 
@@ -89,6 +89,9 @@ async def websocket_endpoint(websocket: WebSocket):
             raw_data = await websocket.receive_text()
             data = json.loads(raw_data)
             action = data.get("action")
+            if action == "ping":
+                await websocket.send_text(json.dumps({"action": "pong", "timestamp": time.time()}))
+                continue
             if action == "register":
                 payload = data.get("payload", {})
                 client_metadata[websocket]["email"] = payload.get("email")
@@ -865,7 +868,7 @@ def run_cli():
 
     args = parser.parse_args(sys.argv[2:])
 
-    port = int(os.environ.get("PORT", 8770))
+    port = int(os.environ.get("PORT", 8769))
     base_url = f"http://127.0.0.1:{port}"
 
     if args.command == "status":
